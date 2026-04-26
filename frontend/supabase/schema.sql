@@ -1,0 +1,12 @@
+create extension if not exists "pgcrypto";
+create table mempool_snapshots (  id uuid primary key default gen_random_uuid(),  captured_at timestamptz not null default now(),  tx_count integer,  median_fee_rate numeric(10,2),  p10_fee_rate numeric(10,2),  p90_fee_rate numeric(10,2),  total_size_mb numeric(8,3),  high_fee_pct numeric(5,2),  avg_tx_size_bytes numeric(8,2),  tx_arrival_rate numeric(8,2),  fee_cluster smallint);
+create table sentiment_snapshots (  id uuid primary key default gen_random_uuid(),  captured_at timestamptz not null default now(),  score numeric(4,3),  score_velocity numeric(5,3),  article_volume integer,  dominant_topic text,  source_weight numeric(4,3));
+create table features (  id uuid primary key default gen_random_uuid(),  captured_at timestamptz not null default now(),  mempool_snapshot_id uuid references mempool_snapshots(id),  sentiment_snapshot_id uuid references sentiment_snapshots(id),  tx_count integer,  median_fee_rate numeric(10,2),  total_size_mb numeric(8,3),  fee_cluster smallint,  sentiment_score numeric(4,3),  sentiment_velocity numeric(5,3),  article_volume integer);
+create table predictions (  id uuid primary key default gen_random_uuid(),  predicted_at timestamptz not null default now(),  feature_id uuid references features(id),  fee_1block numeric(10,2),  fee_3block numeric(10,2),  fee_6block numeric(10,2),  confidence numeric(4,3),  model_version text);
+create table actuals (  id uuid primary key default gen_random_uuid(),  confirmed_at timestamptz not null default now(),  prediction_id uuid references predictions(id),  actual_fee_paid numeric(10,2),  blocks_to_confirm integer,  error_sat_vb numeric(8,3));
+create index on mempool_snapshots (captured_at desc);
+create index on sentiment_snapshots (captured_at desc);
+create index on features (captured_at desc);
+create index on predictions (predicted_at desc);
+alter table features replica identity full;
+alter table predictions replica identity full;
