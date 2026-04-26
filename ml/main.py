@@ -875,7 +875,7 @@ def _is_last_friday(ts: datetime.datetime) -> bool:
     return ts.weekday() == 4 and (last_day - ts.day) < 7
 
 
-@app.post("/bootstrap")
+@app.get("/bootstrap")
 def bootstrap_endpoint():
     if not supabase_client:
         return {"error": "Supabase not configured"}
