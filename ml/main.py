@@ -498,7 +498,7 @@ def health_endpoint():
     return {
         "status": "ok",
         "models_loaded": list(MODELS.keys()),
-        "finbert": FINBERT_AVAILABLE,
+        "ai_engine": "huggingface" if HF_TOKEN else "keyword_fallback",
     }
 
 
