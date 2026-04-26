@@ -99,7 +99,7 @@ flowchart LR
 The prediction engine uses a **Random Forest** model trained on specific market "regimes" (temporal windows).
 
 ```mermaid
-graph LN
+graph LR
     F1[TX Count] --> Input
     F2[Median Fee] --> Input
     F3[Sentiment Score] --> Input
@@ -110,7 +110,7 @@ graph LN
     end
     
     Input --> Scaler[Standard Scaler]
-    Scaler --> RF[Random Forest Forest]
+    Scaler --> RF[Random Forest Model]
     
     RF --> P1[Next Block Estimate]
     RF --> P2[3-Block Estimate]
