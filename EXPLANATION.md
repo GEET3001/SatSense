@@ -1,4 +1,4 @@
-# SenticPulse System Architecture & Workflow
+# SatSense System Architecture & Workflow
 
 This document explains the technical inner workings of the Mempool Sentiment Engine, detailing how data flows from external sources into our predictive models and finally to the dashboard.
 

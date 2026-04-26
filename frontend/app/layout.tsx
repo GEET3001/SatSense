@@ -6,7 +6,7 @@ import { Providers } from './providers'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'Mempool Intelligence',
+  title: 'SatSense',
   description: 'Bitcoin mempool sentiment analysis',
 }
 

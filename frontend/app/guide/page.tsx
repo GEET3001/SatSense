@@ -158,7 +158,7 @@ export default function GuidePage() {
       </main>
 
       <footer className="py-12 border-t border-gray-800 text-center text-gray-600 text-sm">
-        &copy; 2026 SenticPulse Intelligence. For informational purposes only.
+        &copy; 2026 SatSense Analytics. For informational purposes only.
       </footer>
     </div>
   )

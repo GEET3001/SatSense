@@ -72,7 +72,7 @@ export default function Dashboard() {
       {/* HEADER */}
       <header className="flex h-12 w-full flex-row items-center justify-between border-b border-gray-800 px-6">
         <div>
-          <span className="text-lg font-medium text-white">Mempool Tracker</span>
+          <span className="text-lg font-bold text-white tracking-tight">SatSense</span>
         </div>
         <div>
           <span className="font-mono text-sm text-gray-400">{clock}</span>

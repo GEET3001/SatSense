@@ -1,10 +1,10 @@
-# Mempool Sentiment Engine (SenticPulse)
+# SatSense (Mempool Intelligence)
 
 A full-stack Bitcoin analytics platform that correlates real-time market sentiment with mempool congestion patterns using a state-of-the-art 2026-regime ML model.
 
 ## Overview
 
-SenticPulse is designed to predict Bitcoin fee trends by analyzing the interplay between social catalysts (news, social media) and on-chain transaction pressure. It features a high-performance FastAPI backend for ML processing and a sleek Next.js dashboard for real-time visualization.
+SatSense is designed to predict Bitcoin fee trends by analyzing the interplay between social catalysts (news, social media) and on-chain transaction pressure. It features a high-performance FastAPI backend for ML processing and a sleek Next.js dashboard for real-time visualization.
 
 ### Key Features
 - **2026 Fee Market Modeling:** Calibrated for the post-L2-dominance era where institutional settlement and retail Lightning usage define the fee floor.
