@@ -21,6 +21,7 @@ export type FeatureRow = {
   sentiment_velocity: number
   article_volume: number
   predictions?: Prediction[]
+  prediction?: Prediction
 }
 
 export const latestPredictionAtom = atom<Prediction | null>(null)

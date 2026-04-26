@@ -59,10 +59,7 @@ LATEST_NEWS = []
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
 MODEL_PATH = os.getenv("MODEL_PATH", "./models/")
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
-REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
 
 os.makedirs(MODEL_PATH, exist_ok=True)
 
