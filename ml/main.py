@@ -32,26 +32,11 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-PRAW_AVAILABLE = True
-try:
-    import praw
-except ImportError:
-    PRAW_AVAILABLE = False
-    logger.warning("PRAW not available. Reddit sentiment will be skipped.")
+HF_API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 
-FINBERT_AVAILABLE = True
-try:
-    from transformers import pipeline
-
-    logger.info("Loading ProsusAI/finbert model...")
-    # NOTE: The user asked to load ProsusAI/finbert tokenizer and model at module level.
-    finbert_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert")
-except ImportError:
-    FINBERT_AVAILABLE = False
-    logger.warning("transformers not available. Falling back to keyword scoring.")
-except Exception as e:
-    FINBERT_AVAILABLE = False
-    logger.warning(f"Error loading FinBERT: {e}. Falling back to keyword scoring.")
+if not HF_TOKEN:
+    logger.warning("HUGGINGFACE_TOKEN not set. Falling back to keyword scoring.")
 
 MODELS = {}
 PREV_SENTIMENT = 0.0
@@ -123,63 +108,46 @@ app = FastAPI(lifespan=lifespan)
 
 
 
-def score_texts(texts: list[str]) -> list[float]:
-    if FINBERT_AVAILABLE:
-        scores = []
-        if not texts:
-            return []
-
-        safe_texts = [str(t)[:512] for t in texts]
-        try:
-            results = finbert_pipeline(safe_texts)
-            for res in results:
-                label = res["label"]
-                conf = res["score"]
-                if label == "positive":
-                    scores.append(1.0 * conf)
-                elif label == "negative":
-                    scores.append(-1.0 * conf)
-                else:
-                    scores.append(0.0)
-            return scores
-        except Exception as e:
-            logger.error(f"Error scoring with FinBERT: {e}. Falling back to keywords.")
-
-    positive_words = [
-        "bull",
-        "surge",
-        "rally",
-        "ath",
-        "gain",
-        "up",
-        "buy",
-        "adopt",
-        "approve",
-    ]
-    negative_words = [
-        "bear",
-        "crash",
-        "dump",
-        "hack",
-        "ban",
-        "scam",
-        "fear",
-        "sell",
-        "lose",
-    ]
+def _score_texts_keyword_fallback(texts: list[str]) -> list[float]:
+    positive_words = ["bull", "surge", "rally", "ath", "gain", "up", "buy", "adopt", "approve"]
+    negative_words = ["bear", "crash", "dump", "hack", "ban", "scam", "fear", "sell", "lose"]
     scores = []
     for text in texts:
         text_lower = str(text).lower()
         words = text_lower.split()
-        total_words = len(words)
-
         pos_count = sum(1 for w in positive_words if w in text_lower)
         neg_count = sum(1 for w in negative_words if w in text_lower)
-
-        score = (pos_count - neg_count) / max(total_words, 1)
-        score = max(-1.0, min(1.0, score))
-        scores.append(score)
+        score = (pos_count - neg_count) / max(len(words), 1)
+        scores.append(max(-1.0, min(1.0, score)))
     return scores
+
+async def score_texts(texts: list[str]) -> list[float]:
+    if not texts: return []
+    if not HF_TOKEN: return _score_texts_keyword_fallback(texts)
+    
+    try:
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(HF_API_URL, headers=headers, json={"inputs": texts}, timeout=15.0)
+            if response.status_code == 200:
+                results = response.json()
+                if isinstance(results, list) and len(results) > 0 and isinstance(results[0], list):
+                    results = results[0]
+                
+                scores = []
+                for res in results:
+                    label = res.get("label", "neutral").lower()
+                    conf = res.get("score", 0.0)
+                    if label == "positive": scores.append(1.0 * conf)
+                    elif label == "negative": scores.append(-1.0 * conf)
+                    else: scores.append(0.0)
+                return scores
+            else:
+                logger.warning(f"HF API Error {response.status_code}: {response.text}")
+                return _score_texts_keyword_fallback(texts)
+    except Exception as e:
+        logger.warning(f"HF API Call failed: {e}")
+        return _score_texts_keyword_fallback(texts)
 
 
 def get_dominant_topic(texts: list[str]) -> str:
@@ -294,9 +262,9 @@ async def fetch_sentiment_data() -> dict:
     except Exception as e:
         logger.error(f"Error in macro data fetch: {e}")
 
-    rss_scores = score_texts(rss_texts) if rss_texts else []
-    reddit_scores = score_texts(reddit_texts) if reddit_texts else []
-    mempool_scores = score_texts(mempool_alert_texts) if mempool_alert_texts else []
+    rss_scores = await score_texts(rss_texts) if rss_texts else []
+    reddit_scores = await score_texts(reddit_texts) if reddit_texts else []
+    mempool_scores = await score_texts(mempool_alert_texts) if mempool_alert_texts else []
 
     global LATEST_NEWS
     all_items = []

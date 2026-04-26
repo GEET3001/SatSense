@@ -4,12 +4,7 @@ scikit-learn
 pandas
 numpy
 joblib
-requests
 httpx
 feedparser
 python-dotenv
 supabase
-praw
-transformers
-torch
-black
