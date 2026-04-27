@@ -48,8 +48,6 @@ export default function Dashboard() {
   const sentimentColor = isBullish ? 'text-green-400' : isBearish ? 'text-red-400' : 'text-gray-400'
   const sentimentLabel = isBullish ? 'Bullish' : isBearish ? 'Bearish' : 'Neutral'
 
-  const sentimentVelocity = latest?.sentiment_velocity ?? 0
-  const isVelocityPositive = sentimentVelocity >= 0
 
   const clusterNames: Record<number, string> = {
     0: 'Low priority',
@@ -173,20 +171,6 @@ export default function Dashboard() {
             >
               {sentimentLabel}
             </span>
-          </div>
-
-          <div
-            className={`mt-2 flex items-center gap-1 text-sm ${isVelocityPositive ? 'text-green-500' : 'text-red-500'}`}
-            title="Sentiment Velocity measures how fast the market mood is changing."
-          >
-            <span>{isVelocityPositive ? '▲' : '▼'}</span>
-            <span>Δ {Math.abs(sentimentVelocity).toFixed(3)}</span>
-            <span className="ml-1 text-xs text-gray-500">Velocity</span>
-          </div>
-          <div className="mt-1 text-xs text-gray-500 leading-tight">
-            {isVelocityPositive 
-              ? "Mood is rapidly improving (Sudden optimism)" 
-              : "Mood is rapidly worsening (Sudden panic)"}
           </div>
 
           <div className="my-3 border-t border-gray-800"></div>
