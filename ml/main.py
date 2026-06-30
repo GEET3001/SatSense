@@ -164,6 +164,40 @@ _NEG_PHRASES = {
 # Source credibility multiplier for impact ranking (Reddit slightly up-weighted).
 _SRC_WEIGHT = {"News": 1.0, "Reddit": 1.3}
 
+# Many RSS feeds append their own site name to the title field, sometimes with
+# a separator (dash/pipe) and sometimes with just a space. Match at end of string.
+_RSS_PUBLISHER_SUFFIX = re.compile(
+    r'[\s\-–|]*\b(Bitcoin Magazine|CoinDesk|Cointelegraph|Decrypt|Bitcoinist'
+    r'|NewsBTC|CryptoSlate|The Block|BeInCrypto)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _clean_rss_text(title: str, summary: str) -> str:
+    """Return a clean, non-repetitive text for an RSS entry.
+
+    Some feeds (e.g. Bitcoin Magazine) append the site name to every title AND
+    start their summary with the full headline again, producing:
+      "Headline Site Name\\n\\nHeadline Site Name body..."
+    We strip the publisher suffix and skip the summary if it just echoes the title.
+    """
+    title = html.unescape(title).strip()
+    title = _RSS_PUBLISHER_SUFFIX.sub('', title).strip()
+
+    summary = html.unescape(re.sub(r'<[^>]+>', '', summary)).strip()
+    if not summary:
+        return title
+
+    # Detect repeated header: normalise both and compare the first 50 chars.
+    nt = re.sub(r'\s+', ' ', title.lower())
+    ns = re.sub(r'\s+', ' ', summary.lower())
+    overlap = min(50, len(nt))
+    if overlap >= 20 and ns.startswith(nt[:overlap]):
+        return title  # summary is just the headline again — use title only
+
+    # Append a short excerpt of the summary for richer context.
+    return (title + ". " + summary[:200]).strip()
+
 
 def _mk_item(source: str, text: str, score: float) -> dict:
     clipped = text[:150] + ("..." if len(text) > 150 else "")
@@ -341,10 +375,7 @@ async def fetch_sentiment_data() -> dict:
                 for entry in parsed.entries[:5]:
                     title = entry.title if hasattr(entry, "title") else ""
                     summary = entry.get("summary", "")
-                    # Strip HTML tags and decode HTML entities like &quot; or &#39;
-                    clean_summary = html.unescape(re.sub(r'<[^>]+>', '', summary))
-                    clean_title = html.unescape(title)
-                    res_texts.append((clean_title + " " + clean_summary).strip())
+                    res_texts.append(_clean_rss_text(title, summary))
             except Exception as e:
                 logger.error(f"Error fetching RSS {feed_url}: {e}")
         return res_texts
