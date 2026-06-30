@@ -9,7 +9,6 @@ import {
   connectionStatusAtom,
   sentimentHistoryAtom,
   FeatureRow,
-  Prediction
 } from '../lib/atoms'
 
 export function useRealtimeData() {
@@ -57,26 +56,10 @@ export function useRealtimeData() {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'features' },
-        (payload) => {
-          const newRow = payload.new as FeatureRow
-
-          setFeaturesHistory((prev) => {
-            const next = [newRow, ...prev]
-            return next.slice(0, 288)
-          })
-
-          if (newRow.sentiment_score !== undefined) {
-            setSentimentHistory((prev) => {
-              const next = [newRow.sentiment_score, ...prev]
-              return next.slice(0, 24)
-            })
-          }
-
-          if (newRow.prediction) {
-            setLatestPrediction(newRow.prediction)
-          } else if (newRow.predictions && newRow.predictions.length > 0) {
-            setLatestPrediction(newRow.predictions[0])
-          }
+        () => {
+          // Raw Supabase rows don't carry the joined prediction — re-fetch
+          // the API so we always get the latest prediction alongside features.
+          fetchLatest()
         },
       )
       .subscribe((status) => {

@@ -4,8 +4,8 @@ import { LineChart, Line, ResponsiveContainer } from 'recharts'
 
 export default function SentimentSparkline({ data, score }: { data: number[]; score: number }) {
   let color = '#6B7280'
-  if (score > 0.2) color = '#10B981'
-  else if (score < -0.2) color = '#EF4444'
+  if (score > 0.15) color = '#10B981'
+  else if (score < -0.15) color = '#EF4444'
 
   const chartData = data.map((s, i) => ({ value: s, i })).reverse()
 

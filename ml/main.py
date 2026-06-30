@@ -2,6 +2,7 @@ import os
 import json
 import math
 import asyncio
+import calendar as _calendar
 import datetime
 from datetime import timezone
 import logging
@@ -158,6 +159,39 @@ _NEG_PHRASES = {
     "below support": 0.7, "sell pressure": 0.7, "selling pressure": 0.7,
     "profit taking": 0.5,
 }
+
+
+# Source credibility multiplier for impact ranking (Reddit slightly up-weighted).
+_SRC_WEIGHT = {"News": 1.0, "Reddit": 1.3}
+
+
+def _mk_item(source: str, text: str, score: float) -> dict:
+    clipped = text[:150] + ("..." if len(text) > 150 else "")
+    return {
+        "source": source,
+        "text": clipped,
+        "score": round(float(score), 3),
+        "impact": round(abs(float(score)) * _SRC_WEIGHT.get(source, 1.0), 3),
+    }
+
+
+def _assign_fee_cluster(median_fee_rate: float) -> int:
+    """Unified 2026-regime fee cluster assignment used by both live data and bootstrap.
+    Cluster 0 = Filler floor  (< 4 sat/vB)
+    Cluster 1 = Economy/utility (4–9 sat/vB)
+    Cluster 2 = Normal          (9–16 sat/vB)
+    Cluster 3 = Priority        (16–30 sat/vB)
+    Cluster 4 = Urgent/L2 spike (> 30 sat/vB)
+    """
+    if median_fee_rate < 4:
+        return 0
+    elif median_fee_rate < 9:
+        return 1
+    elif median_fee_rate < 16:
+        return 2
+    elif median_fee_rate < 30:
+        return 3
+    return 4
 
 
 def _keyword_score_one(text: str) -> float:
@@ -339,9 +373,6 @@ async def fetch_sentiment_data() -> dict:
     except Exception as e:
         logger.warning(f"Reddit public JSON fetch failed: {e}")
 
-    # We bypassed the Mempool fee recommended API call as requested
-    mempool_alert_texts = []
-    
     fng_score = 0.0
     github_commit_score = 0.0
     btc_price_score = 0.0
@@ -384,37 +415,16 @@ async def fetch_sentiment_data() -> dict:
 
     rss_scores = await score_texts(rss_texts) if rss_texts else []
     reddit_scores = await score_texts(reddit_texts) if reddit_texts else []
-    mempool_scores = await score_texts(mempool_alert_texts) if mempool_alert_texts else []
 
     global LATEST_NEWS
-    # Source credibility multiplier for impact (not for the raw tone score).
-    _SRC_WEIGHT = {"News": 1.0, "Reddit": 1.3, "Mempool Alert": 1.0}
-
-    def _mk_item(source: str, text: str, score: float) -> dict:
-        clipped = text[:150] + ("..." if len(text) > 150 else "")
-        return {
-            "source": source,
-            "text": clipped,
-            "score": round(float(score), 3),
-            # Impact = tone magnitude x source credibility -> how market-moving it is.
-            "impact": round(abs(float(score)) * _SRC_WEIGHT.get(source, 1.0), 3),
-        }
-
     all_items = [_mk_item("News", t, s) for t, s in zip(rss_texts, rss_scores)]
     all_items += [_mk_item("Reddit", t, s) for t, s in zip(reddit_texts, reddit_scores)]
-    all_items += [_mk_item("Mempool Alert", t, s) for t, s in zip(mempool_alert_texts, mempool_scores)]
-
-    # Surface the most impactful (credibility-weighted) statements first.
     all_items.sort(key=lambda x: x["impact"], reverse=True)
     LATEST_NEWS = all_items[:4]
 
-    # Headline news as a SINGLE averaged component, so the sheer volume of
-    # near-zero article scores can't drown out the market-direction signals
-    # (this was the root cause of sentiment being stuck at ~0.000 / Neutral).
     article_scores = (
         [s * 1.0 for s in rss_scores]
         + [s * 1.3 for s in reddit_scores]
-        + [s * 1.0 for s in mempool_scores]
     )
     news_avg = (sum(article_scores) / len(article_scores)) if article_scores else 0.0
 
@@ -434,8 +444,8 @@ async def fetch_sentiment_data() -> dict:
     )
     current_avg = max(-1.0, min(1.0, current_avg))
 
-    all_texts = rss_texts + reddit_texts + mempool_alert_texts
-    
+    all_texts = rss_texts + reddit_texts
+
     if current_avg == 0.0 and len(all_texts) == 0:
         # If API failed or returned nothing, drift slightly so it doesn't freeze
         current_avg = PREV_SENTIMENT + random.gauss(0, 0.015)
@@ -589,17 +599,9 @@ async def fetch_mempool_data() -> dict:
             fee_cluster = int(MODELS["kmeans"].predict(X_clust)[0])
         except Exception as e:
             logger.error(f"KMeans prediction failed: {e}")
+            fee_cluster = _assign_fee_cluster(median_fee_rate)
     else:
-        if median_fee_rate < 5:
-            fee_cluster = 0
-        elif 5 <= median_fee_rate < 15:
-            fee_cluster = 1
-        elif 15 <= median_fee_rate < 30:
-            fee_cluster = 2
-        elif 30 <= median_fee_rate < 80:
-            fee_cluster = 3
-        else:
-            fee_cluster = 4
+        fee_cluster = _assign_fee_cluster(median_fee_rate)
 
     return {
         "tx_count": tx_count,
@@ -1020,11 +1022,9 @@ def train_endpoint():
     }
 
 
-# 
+#
 # Bootstrap helpers — calibrated to April 2026 Bitcoin mempool regime
-# 
-
-import calendar as _calendar
+#
 
 # 2026 Efficiency Floor: Lightning/L2 migration has pushed mainchain clear.
 # Filler (Ordinals/Runes) sustains a 1-3 sat/vB baseline.
@@ -1210,22 +1210,7 @@ def bootstrap_endpoint():
         high_fee_pct    = min(100.0, max(0.0, (median_fee_rate - 10) * 3))
         tx_arrival_rate = tx_count / 5.0
 
-        #  2026 Fee clusters (re-calibrated thresholds) 
-        # Cluster 0 = Filler floor (1-3 sat/vB)
-        # Cluster 1 = Economy / utility (4-8 sat/vB)
-        # Cluster 2 = Normal (9-15 sat/vB)
-        # Cluster 3 = Priority (16-30 sat/vB)
-        # Cluster 4 = Urgent / L2 spike (>30 sat/vB)
-        if median_fee_rate < 4:
-            fee_cluster = 0
-        elif median_fee_rate < 9:
-            fee_cluster = 1
-        elif median_fee_rate < 16:
-            fee_cluster = 2
-        elif median_fee_rate < 30:
-            fee_cluster = 3
-        else:
-            fee_cluster = 4
+        fee_cluster = _assign_fee_cluster(median_fee_rate)
 
         #  Sentiment: drifts; spikes + expiry push bearish 
         sentiment += random.gauss(0, 0.025)
@@ -1361,7 +1346,6 @@ def bootstrap_endpoint():
 
 @app.get("/news")
 async def get_news():
-    global LATEST_NEWS
     if not LATEST_NEWS:
         await fetch_sentiment_data()
     return LATEST_NEWS[:3]
