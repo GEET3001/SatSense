@@ -108,17 +108,38 @@ app = FastAPI(lifespan=lifespan)
 
 
 
+# Weighted crypto-news lexicons (single lowercase tokens). Strong movers ~1.0,
+# moderate ~0.5-0.7, mild ~0.3-0.4. Used when FinBERT is unavailable.
+_POS_LEXICON = {
+    "surge": 1.0, "surges": 1.0, "soar": 1.0, "soars": 1.0, "skyrocket": 1.0,
+    "rally": 0.9, "rallies": 0.9, "breakout": 0.9, "ath": 1.0, "bullish": 1.0,
+    "bull": 0.7, "moon": 0.7, "rebound": 0.7, "rebounds": 0.7, "jumps": 0.7, "jump": 0.7,
+    "inflows": 0.7, "inflow": 0.7, "adoption": 0.7, "adopt": 0.6, "approve": 0.8,
+    "approval": 0.8, "approved": 0.8, "gain": 0.6, "gains": 0.6, "rise": 0.6, "rises": 0.6,
+    "recover": 0.6, "recovers": 0.6, "upgrade": 0.6, "accumulate": 0.6, "record": 0.5,
+    "partnership": 0.5, "buy": 0.4, "institutional": 0.4, "support": 0.3, "high": 0.3,
+}
+_NEG_LEXICON = {
+    "crash": 1.0, "crashes": 1.0, "plunge": 1.0, "plunges": 1.0, "plummet": 1.0,
+    "collapse": 1.0, "bearish": 1.0, "selloff": 0.9, "tumble": 0.9, "tumbles": 0.9,
+    "dump": 0.9, "dumps": 0.9, "hack": 0.9, "hacked": 0.9, "scam": 0.9, "fraud": 0.9,
+    "exploit": 0.8, "liquidation": 0.8, "liquidated": 0.8, "slump": 0.8, "bear": 0.7,
+    "ban": 0.8, "banned": 0.8, "outflows": 0.7, "outflow": 0.7, "lawsuit": 0.6, "sue": 0.6,
+    "reject": 0.6, "rejected": 0.6, "fear": 0.6, "fud": 0.6, "drop": 0.6, "drops": 0.6,
+    "fall": 0.6, "falls": 0.6, "decline": 0.6, "loss": 0.6, "losses": 0.6, "pressure": 0.5,
+    "warning": 0.5, "weak": 0.5, "risk": 0.4, "low": 0.3,
+}
+
+
 def _score_texts_keyword_fallback(texts: list[str]) -> list[float]:
-    positive_words = ["bull", "surge", "rally", "ath", "gain", "up", "buy", "adopt", "approve"]
-    negative_words = ["bear", "crash", "dump", "hack", "ban", "scam", "fear", "sell", "lose"]
     scores = []
     for text in texts:
-        text_lower = str(text).lower()
-        words = text_lower.split()
-        pos_count = sum(1 for w in positive_words if w in text_lower)
-        neg_count = sum(1 for w in negative_words if w in text_lower)
-        score = (pos_count - neg_count) / max(len(words), 1)
-        scores.append(max(-1.0, min(1.0, score)))
+        # Token-equality (not substring) avoids false hits like "up" in "support".
+        tokens = set(re.findall(r"[a-z]+", str(text).lower()))
+        pos = sum(w for term, w in _POS_LEXICON.items() if term in tokens)
+        neg = sum(w for term, w in _NEG_LEXICON.items() if term in tokens)
+        # tanh saturation: a couple of strong words approach +/-1 without clipping noise.
+        scores.append(max(-1.0, min(1.0, math.tanh((pos - neg) / 1.5))))
     return scores
 
 async def score_texts(texts: list[str]) -> list[float]:
@@ -129,22 +150,28 @@ async def score_texts(texts: list[str]) -> list[float]:
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         async with httpx.AsyncClient() as client:
             response = await client.post(HF_API_URL, headers=headers, json={"inputs": texts}, timeout=15.0)
-            if response.status_code == 200:
-                results = response.json()
-                if isinstance(results, list) and len(results) > 0 and isinstance(results[0], list):
-                    results = results[0]
-                
-                scores = []
-                for res in results:
-                    label = res.get("label", "neutral").lower()
-                    conf = res.get("score", 0.0)
-                    if label == "positive": scores.append(1.0 * conf)
-                    elif label == "negative": scores.append(-1.0 * conf)
-                    else: scores.append(0.0)
-                return scores
-            else:
+            if response.status_code != 200:
                 logger.warning(f"HF API Error {response.status_code}: {response.text}")
                 return _score_texts_keyword_fallback(texts)
+
+            results = response.json()
+            # FinBERT returns one list of label-dicts PER input. Normalise a single
+            # input ([{...},{...}]) to the batch shape ([[{...},{...}]]).
+            if results and isinstance(results[0], dict):
+                results = [results]
+
+            def _signed(label_dicts) -> float:
+                # Signed score = P(positive) - P(negative); captures intensity AND
+                # certainty far better than picking the single top label.
+                probs = {d.get("label", "").lower(): d.get("score", 0.0) for d in label_dicts}
+                return float(probs.get("positive", 0.0) - probs.get("negative", 0.0))
+
+            scores = [_signed(item) for item in results]
+            # Guard against any shape surprise so we never return misaligned scores.
+            if len(scores) != len(texts):
+                logger.warning("HF API returned mismatched length; using keyword fallback")
+                return _score_texts_keyword_fallback(texts)
+            return scores
     except Exception as e:
         logger.warning(f"HF API Call failed: {e}")
         return _score_texts_keyword_fallback(texts)
@@ -307,16 +334,25 @@ async def fetch_sentiment_data() -> dict:
     mempool_scores = await score_texts(mempool_alert_texts) if mempool_alert_texts else []
 
     global LATEST_NEWS
-    all_items = []
-    for text, score in zip(rss_texts, rss_scores):
-        all_items.append({"source": "News", "text": text[:150] + ("..." if len(text) > 150 else ""), "score": score})
-    for text, score in zip(reddit_texts, reddit_scores):
-        all_items.append({"source": "Reddit", "text": text[:150] + ("..." if len(text) > 150 else ""), "score": score})
-    for text, score in zip(mempool_alert_texts, mempool_scores):
-        all_items.append({"source": "Mempool Alert", "text": text[:150], "score": score})
-    
-    # Sort by absolute score to get the most impactful statements
-    all_items.sort(key=lambda x: abs(x["score"]), reverse=True)
+    # Source credibility multiplier for impact (not for the raw tone score).
+    _SRC_WEIGHT = {"News": 1.0, "Reddit": 1.3, "Mempool Alert": 1.0}
+
+    def _mk_item(source: str, text: str, score: float) -> dict:
+        clipped = text[:150] + ("..." if len(text) > 150 else "")
+        return {
+            "source": source,
+            "text": clipped,
+            "score": round(float(score), 3),
+            # Impact = tone magnitude x source credibility -> how market-moving it is.
+            "impact": round(abs(float(score)) * _SRC_WEIGHT.get(source, 1.0), 3),
+        }
+
+    all_items = [_mk_item("News", t, s) for t, s in zip(rss_texts, rss_scores)]
+    all_items += [_mk_item("Reddit", t, s) for t, s in zip(reddit_texts, reddit_scores)]
+    all_items += [_mk_item("Mempool Alert", t, s) for t, s in zip(mempool_alert_texts, mempool_scores)]
+
+    # Surface the most impactful (credibility-weighted) statements first.
+    all_items.sort(key=lambda x: x["impact"], reverse=True)
     LATEST_NEWS = all_items[:4]
 
     # Headline news as a SINGLE averaged component, so the sheer volume of
