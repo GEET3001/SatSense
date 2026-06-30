@@ -310,8 +310,13 @@ async def fetch_sentiment_data() -> dict:
         # If API failed or returned nothing, drift slightly so it doesn't freeze
         current_avg = PREV_SENTIMENT + random.gauss(0, 0.015)
         current_avg = max(-1.0, min(1.0, current_avg))
-        # Keep recent topic to avoid empty state
-        dominant_topic = get_dominant_topic(LATEST_NEWS) if LATEST_NEWS else "price_action"
+        # Keep recent topic to avoid empty state. LATEST_NEWS holds dicts
+        # ({"source","text","score"}), so extract the text before scoring topics.
+        dominant_topic = (
+            get_dominant_topic([item["text"] for item in LATEST_NEWS])
+            if LATEST_NEWS
+            else "price_action"
+        )
     else:
         dominant_topic = get_dominant_topic(all_texts)
 
@@ -328,42 +333,122 @@ async def fetch_sentiment_data() -> dict:
     }
 
 
-async def fetch_mempool_data() -> dict:
-    #  Non-functional API bypassed 
-    # Mempool.space API is currently blocked or unreachable in this environment.
-    # Bypassing to synthetic generation to maintain dashboard stability.
-    tx_count = 0
-    median_fee_rate = 1.0
-    total_size_mb = 0.0
-    p10 = 1.0
-    p90 = 1.0
-    high_fee_pct = 0.0
+def _synthetic_mempool_core() -> dict:
+    """Realistic 2026-regime synthetic mempool snapshot. Used as a fallback when
+    the live mempool.space API is unreachable so the dashboard stays dynamic."""
+    now = datetime.datetime.now(timezone.utc)
+    median_fee_rate = _sample_fee_layer(now.hour, now.weekday()) + random.gauss(0, 0.5)
+    median_fee_rate = min(FEE_CAP, max(ORDINALS_FLOOR, median_fee_rate))
 
-    #  Synthetic Fallback Logic 
-    # If mempool.space blocks us or times out, generate realistic real-time 
-    # synthetic data using the 2026 bootstrap logic so the dashboard remains dynamic.
-    if tx_count == 0 or median_fee_rate == 1.0:
-        logger.info("Using realistic synthetic fallback for mempool data due to API failure")
-        now = datetime.datetime.now(timezone.utc)
-        median_fee_rate = _sample_fee_layer(now.hour, now.weekday()) + random.gauss(0, 0.5)
-        median_fee_rate = min(FEE_CAP, max(ORDINALS_FLOOR, median_fee_rate))
-        
-        sess = _session(now.hour)
-        if sess == "us_open":
-            tx_count = int(random.uniform(30_000, 70_000) + random.gauss(0, 2000))
-        elif sess == "peak":
-            tx_count = int(random.uniform(20_000, 50_000) + random.gauss(0, 1500))
-        else:
-            tx_count = int(random.uniform(8_000, 25_000) + random.gauss(0, 1000))
-            
-        avg_tx_size_bytes = random.uniform(250, 480)
-        total_size_mb = min(80.0, max(1.5, tx_count * avg_tx_size_bytes / 1_000_000))
-        
-        p10 = max(ORDINALS_FLOOR, median_fee_rate * random.uniform(0.50, 0.80))
-        p90 = min(FEE_CAP, median_fee_rate * random.uniform(1.2, 2.0))
-        high_fee_pct = min(100.0, max(0.0, (median_fee_rate - 10) * 3))
+    sess = _session(now.hour)
+    if sess == "us_open":
+        tx_count = int(random.uniform(30_000, 70_000) + random.gauss(0, 2000))
+    elif sess == "peak":
+        tx_count = int(random.uniform(20_000, 50_000) + random.gauss(0, 1500))
     else:
-        avg_tx_size_bytes = (total_size_mb * 1_000_000 / tx_count) if tx_count > 0 else 250.0
+        tx_count = int(random.uniform(8_000, 25_000) + random.gauss(0, 1000))
+
+    avg_tx_size_bytes = random.uniform(250, 480)
+    total_size_mb = min(80.0, max(1.5, tx_count * avg_tx_size_bytes / 1_000_000))
+
+    p10 = max(ORDINALS_FLOOR, median_fee_rate * random.uniform(0.50, 0.80))
+    p90 = min(FEE_CAP, median_fee_rate * random.uniform(1.2, 2.0))
+    high_fee_pct = min(100.0, max(0.0, (median_fee_rate - 10) * 3))
+
+    return {
+        "tx_count": tx_count,
+        "total_size_mb": total_size_mb,
+        "median_fee_rate": median_fee_rate,
+        "p10": p10,
+        "p90": p90,
+        "high_fee_pct": high_fee_pct,
+        "avg_tx_size_bytes": avg_tx_size_bytes,
+        "source": "synthetic",
+    }
+
+
+async def _real_mempool_core() -> dict | None:
+    """Fetch a live snapshot from mempool.space. Returns None if unreachable so
+    the caller can fall back to synthetic generation."""
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0, follow_redirects=True,
+            headers={"User-Agent": "satsense/1.0"},
+        ) as client:
+            resp = await client.get("https://mempool.space/api/mempool")
+            if resp.status_code != 200:
+                logger.warning(f"mempool.space returned {resp.status_code}")
+                return None
+            mp = resp.json()
+    except Exception as e:
+        logger.warning(f"mempool.space fetch failed: {e}")
+        return None
+
+    tx_count = int(mp.get("count", 0) or 0)
+    total_vsize = float(mp.get("vsize", 0) or 0.0)  # vbytes
+    histogram = mp.get("fee_histogram") or []       # list of [feerate, vsize]
+    if tx_count <= 0 or not histogram:
+        return None
+
+    full_v = sum(float(v) for _, v in histogram) or 1.0
+    high_fee_pct = 100.0 * sum(float(v) for fr, v in histogram if float(fr) >= 10.0) / full_v
+
+    # Percentiles over the *confirmation window* (top of the mempool by feerate —
+    # the txs that would actually be mined in the next ~6 blocks). Percentiles over
+    # the whole backlog collapse to the 1 sat/vB dust floor and carry no signal.
+    WINDOW_VB = 6_000_000.0  # ~6 blocks of vsize
+    desc = sorted(
+        ((float(fr), float(v)) for fr, v in histogram), key=lambda x: x[0], reverse=True
+    )
+    window, acc = [], 0.0
+    for fr, v in desc:
+        window.append((fr, v))
+        acc += v
+        if acc >= WINDOW_VB:
+            break
+    pairs = sorted(window, key=lambda x: x[0])  # ascending for the percentile walk
+    total_v = sum(v for _, v in pairs) or 1.0
+
+    def _pct(p: float) -> float:
+        target = p * total_v
+        cum = 0.0
+        for fr, v in pairs:
+            cum += v
+            if cum >= target:
+                return fr
+        return pairs[-1][0]
+
+    median_fee_rate = _pct(0.50)
+    p10 = _pct(0.10)
+    p90 = _pct(0.90)
+
+    return {
+        "tx_count": tx_count,
+        "total_size_mb": total_vsize / 1_000_000.0,
+        "median_fee_rate": min(FEE_CAP, max(ORDINALS_FLOOR, median_fee_rate)),
+        "p10": min(FEE_CAP, max(ORDINALS_FLOOR, p10)),
+        "p90": min(FEE_CAP, max(ORDINALS_FLOOR, p90)),
+        "high_fee_pct": high_fee_pct,
+        "avg_tx_size_bytes": (total_vsize / tx_count) if tx_count else 350.0,
+        "source": "mempool.space",
+    }
+
+
+async def fetch_mempool_data() -> dict:
+    # Try the live mempool.space API first; fall back to the synthetic 2026-regime
+    # engine if it is blocked, rate-limited, or unreachable.
+    core = await _real_mempool_core()
+    if core is None:
+        logger.info("Using synthetic fallback for mempool data")
+        core = _synthetic_mempool_core()
+
+    tx_count        = core["tx_count"]
+    median_fee_rate = core["median_fee_rate"]
+    total_size_mb   = core["total_size_mb"]
+    p10             = core["p10"]
+    p90             = core["p90"]
+    high_fee_pct    = core["high_fee_pct"]
+    avg_tx_size_bytes = core["avg_tx_size_bytes"]
 
     tx_arrival_rate = tx_count / 5.0
 
@@ -426,7 +511,7 @@ def run_prediction(feature_dict: dict) -> dict:
             # vsize_per_tx: bytes per transaction (proxy for large-vs-small batches)
             tx_count   = feature_dict.get("tx_count", 1)
             total_vb   = feature_dict.get("total_size_mb", 0.0) * 1_000_000
-            vsize_per_tx = total_vb / max(tx_count, 1)
+            vsize_per_tx = feature_dict.get("avg_tx_size_bytes") or (total_vb / max(tx_count, 1))
 
             X = np.array(
                 [
@@ -569,6 +654,11 @@ async def snapshot_endpoint():
     pred_payload = feature_payload.copy()
     pred_payload["hour_of_day"] = now.hour
     pred_payload["day_of_week"] = now.weekday()
+    # Pass through the real fee-dispersion + tx-size signals so the model sees the
+    # same fee_iqr / vsize_per_tx it was trained on (avoids train/serve skew).
+    pred_payload["p10"] = mempool_data["p10"]
+    pred_payload["p90"] = mempool_data["p90"]
+    pred_payload["avg_tx_size_bytes"] = mempool_data["avg_tx_size_bytes"]
     pred_dict = run_prediction(pred_payload)
 
     p_resp = (
