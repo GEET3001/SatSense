@@ -141,6 +141,12 @@ _NEG_LEXICON = {
     "struggle": 0.5, "struggles": 0.5, "stall": 0.5, "stalls": 0.5, "halt": 0.5,
     "probe": 0.5, "investigation": 0.5, "delay": 0.5, "delays": 0.5, "crackdown": 0.7,
     "correction": 0.5,
+    # institutional selling / position-reduction language
+    "cut": 0.5, "cuts": 0.5, "sell": 0.5, "selling": 0.5, "sold": 0.5,
+    "reduce": 0.4, "reduces": 0.4, "reduced": 0.4, "reducing": 0.4,
+    "trim": 0.4, "trimmed": 0.4, "exit": 0.5, "exits": 0.5, "exiting": 0.5,
+    "offload": 0.6, "offloads": 0.6, "divest": 0.6, "divests": 0.6, "divestment": 0.7,
+    "rotation": 0.3,
 }
 
 # Multi-word phrases (checked as substrings of the normalised text). These carry
@@ -149,6 +155,9 @@ _POS_PHRASES = {
     "all time high": 1.0, "record high": 0.8, "new high": 0.7, "new highs": 0.7,
     "break out": 0.8, "breaks out": 0.8, "breaking out": 0.8, "higher high": 0.7,
     "golden cross": 0.9, "buy the dip": 0.4,
+    # Fed easing = risk-on = bullish for BTC; counteracts the "cut" token
+    "rate cut": 0.8, "rate cuts": 0.8, "interest rate cut": 0.8,
+    "cut rates": 0.7, "cuts rates": 0.7,
 }
 _NEG_PHRASES = {
     "give back": 0.8, "gives back": 0.8, "gave back": 0.8, "giving back": 0.8,
@@ -158,6 +167,14 @@ _NEG_PHRASES = {
     "all time low": 1.0, "record low": 0.9, "loses support": 0.8, "lost support": 0.8,
     "below support": 0.7, "sell pressure": 0.7, "selling pressure": 0.7,
     "profit taking": 0.5,
+    # institutional position reduction — FinBERT often misses these as bearish
+    "cut exposure": 0.8, "cuts exposure": 0.8, "cutting exposure": 0.8,
+    "reduce exposure": 0.8, "reducing exposure": 0.8, "reduced exposure": 0.8,
+    "cut holdings": 0.7, "reduce holdings": 0.7, "trim holdings": 0.7,
+    "cut bitcoin": 0.8, "cut btc": 0.8, "cut eth": 0.7,
+    "sell bitcoin": 0.8, "selling bitcoin": 0.8, "sell btc": 0.8,
+    "exit bitcoin": 0.7, "exit btc": 0.7, "exit crypto": 0.6,
+    "pulling out": 0.7, "pulled out": 0.7,
 }
 
 
