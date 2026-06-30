@@ -175,6 +175,38 @@ def get_dominant_topic(texts: list[str]) -> str:
     return dominant
 
 
+async def _fetch_btc_change_24h(client: httpx.AsyncClient) -> float | None:
+    """BTC 24h % change, trying several public APIs in order. CoinGecko's free tier
+    rate-limits/blocks many cloud IPs (e.g. Render), so we fall back to exchange
+    tickers that are reliable from datacenter IPs."""
+    sources = [
+        ("coingecko",
+         "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
+         lambda j: float(j["bitcoin"]["usd_24h_change"])),
+        ("coinbase",
+         "https://api.exchange.coinbase.com/products/BTC-USD/stats",
+         lambda j: (float(j["last"]) - float(j["open"])) / float(j["open"]) * 100.0),
+        ("kraken",
+         "https://api.kraken.com/0/public/Ticker?pair=XBTUSD",
+         lambda j: (lambda d: (float(d["c"][0]) - float(d["o"])) / float(d["o"]) * 100.0)(
+             list(j["result"].values())[0])),
+        ("binance",
+         "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT",
+         lambda j: float(j["priceChangePercent"])),
+    ]
+    for name, url, parse in sources:
+        try:
+            r = await client.get(url)
+            if r.status_code == 200:
+                val = parse(r.json())
+                logger.info(f"BTC 24h change via {name}: {val:+.2f}%")
+                return val
+            logger.warning(f"BTC price source {name} returned {r.status_code}")
+        except Exception as e:
+            logger.warning(f"BTC price source {name} failed: {e}")
+    return None
+
+
 async def fetch_sentiment_data() -> dict:
     global PREV_SENTIMENT
 
@@ -247,19 +279,10 @@ async def fetch_sentiment_data() -> dict:
                 logger.warning(f"Error fetching Fear and Greed: {e}")
 
             # 1b. BTC price momentum (24h) — the dominant market-direction signal.
-            # A +/-6% day maps to fully bullish/bearish so sentiment tracks price.
-            try:
-                px_resp = await client.get(
-                    "https://api.coingecko.com/api/v3/simple/price"
-                    "?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
-                )
-                if px_resp.status_code == 200:
-                    btc_change_24h = float(
-                        px_resp.json()["bitcoin"]["usd_24h_change"]
-                    )
-                    btc_price_score = max(-1.0, min(1.0, btc_change_24h / 6.0))
-            except Exception as e:
-                logger.warning(f"Error fetching BTC price: {e}")
+            # A +/-4% day maps to fully bullish/bearish so sentiment tracks price.
+            btc_change_24h = await _fetch_btc_change_24h(client)
+            if btc_change_24h is not None:
+                btc_price_score = max(-1.0, min(1.0, btc_change_24h / 4.0))
 
             # 2. GitHub Commits
             try:
@@ -310,9 +333,9 @@ async def fetch_sentiment_data() -> dict:
     # sentiment moves the same direction as the live market.
     components = [(news_avg, 1.0)]
     if btc_price_score != 0.0:
-        components.append((btc_price_score, 3.0))      # dominant: live price trend
+        components.append((btc_price_score, 5.0))      # dominant: live price trend
     if fng_score != 0.0:
-        components.append((fng_score, 2.0))            # macro fear/greed
+        components.append((fng_score, 1.0))            # macro fear/greed (slow, secondary)
     if github_commit_score != 0.0:
         components.append((github_commit_score, 0.5))  # dev momentum (mild)
 
