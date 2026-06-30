@@ -232,6 +232,8 @@ async def fetch_sentiment_data() -> dict:
     
     fng_score = 0.0
     github_commit_score = 0.0
+    btc_price_score = 0.0
+    btc_change_24h = None
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": "mempool-sentiment-bot/1.0"}) as client:
             # 1. Fear and Greed
@@ -243,6 +245,21 @@ async def fetch_sentiment_data() -> dict:
                     fng_score = (val - 50) / 50.0
             except Exception as e:
                 logger.warning(f"Error fetching Fear and Greed: {e}")
+
+            # 1b. BTC price momentum (24h) — the dominant market-direction signal.
+            # A +/-6% day maps to fully bullish/bearish so sentiment tracks price.
+            try:
+                px_resp = await client.get(
+                    "https://api.coingecko.com/api/v3/simple/price"
+                    "?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
+                )
+                if px_resp.status_code == 200:
+                    btc_change_24h = float(
+                        px_resp.json()["bitcoin"]["usd_24h_change"]
+                    )
+                    btc_price_score = max(-1.0, min(1.0, btc_change_24h / 6.0))
+            except Exception as e:
+                logger.warning(f"Error fetching BTC price: {e}")
 
             # 2. GitHub Commits
             try:
@@ -279,31 +296,32 @@ async def fetch_sentiment_data() -> dict:
     all_items.sort(key=lambda x: abs(x["score"]), reverse=True)
     LATEST_NEWS = all_items[:4]
 
-    total_score = 0.0
-    total_weight = 0.0
+    # Headline news as a SINGLE averaged component, so the sheer volume of
+    # near-zero article scores can't drown out the market-direction signals
+    # (this was the root cause of sentiment being stuck at ~0.000 / Neutral).
+    article_scores = (
+        [s * 1.0 for s in rss_scores]
+        + [s * 1.3 for s in reddit_scores]
+        + [s * 1.0 for s in mempool_scores]
+    )
+    news_avg = (sum(article_scores) / len(article_scores)) if article_scores else 0.0
 
-    for sc in rss_scores:
-        total_score += sc * 1.0
-        total_weight += 1.0
-
-    for sc in reddit_scores:
-        total_score += sc * 1.3
-        total_weight += 1.3
-
-    for sc in mempool_scores:
-        total_score += sc * 1.0
-        total_weight += 1.0
-
+    # Blend the independent signals. BTC price momentum dominates so the displayed
+    # sentiment moves the same direction as the live market.
+    components = [(news_avg, 1.0)]
+    if btc_price_score != 0.0:
+        components.append((btc_price_score, 3.0))      # dominant: live price trend
     if fng_score != 0.0:
-        total_score += fng_score * 2.0  # High weight for macro fear/greed
-        total_weight += 2.0
-        
+        components.append((fng_score, 2.0))            # macro fear/greed
     if github_commit_score != 0.0:
-        total_score += github_commit_score * 0.5  # Modest weight for dev momentum
-        total_weight += 0.5
+        components.append((github_commit_score, 0.5))  # dev momentum (mild)
 
-    current_avg = (total_score / total_weight) if total_weight > 0 else 0.0
-    
+    blend_weight = sum(w for _, w in components)
+    current_avg = (
+        sum(s * w for s, w in components) / blend_weight if blend_weight > 0 else 0.0
+    )
+    current_avg = max(-1.0, min(1.0, current_avg))
+
     all_texts = rss_texts + reddit_texts + mempool_alert_texts
     
     if current_avg == 0.0 and len(all_texts) == 0:

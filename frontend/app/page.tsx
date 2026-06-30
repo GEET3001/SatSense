@@ -43,8 +43,8 @@ export default function Dashboard() {
   const latest = featuresHistory[0] as FeatureRow | undefined
   const latestPred = latestPrediction as Prediction | null
   const sentimentScore = latestPred?.sentiment_score ?? latest?.sentiment_score ?? 0
-  const isBullish = sentimentScore > 0.2
-  const isBearish = sentimentScore < -0.2
+  const isBullish = sentimentScore > 0.15
+  const isBearish = sentimentScore < -0.15
   const sentimentColor = isBullish ? 'text-green-400' : isBearish ? 'text-red-400' : 'text-gray-400'
   const sentimentLabel = isBullish ? 'Bullish' : isBearish ? 'Bearish' : 'Neutral'
 
