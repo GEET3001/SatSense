@@ -69,7 +69,7 @@ export default function NewsFeed() {
               <div className="flex items-center justify-between mt-auto">
                 <span className="text-xs text-gray-500 font-mono uppercase tracking-wider">{item.source}</span>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-400">Sentiment Impact:</span>
+                  <span className="text-xs text-gray-400">Tone:</span>
                   <span className={`text-xs px-2 py-1 rounded border ${badgeColor} font-mono`}>
                     {item.score > 0 ? '+' : ''}{item.score.toFixed(2)}
                   </span>

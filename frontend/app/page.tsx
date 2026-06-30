@@ -34,6 +34,32 @@ export default function Dashboard() {
     return () => clearInterval(interval)
   }, [])
 
+  // News tone = average tone of the current headlines (independent of price).
+  const [newsTone, setNewsTone] = useState<number | null>(null)
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      try {
+        const res = await fetch('/api/news')
+        if (!res.ok) return
+        const items = await res.json()
+        if (active && Array.isArray(items) && items.length > 0) {
+          const avg =
+            items.reduce((s: number, it: any) => s + (it.score ?? 0), 0) / items.length
+          setNewsTone(avg)
+        }
+      } catch {
+        /* leave as null */
+      }
+    }
+    load()
+    const id = setInterval(load, 60000)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
+  }, [])
+
   const feeCards = [
     { label: 'Next block', key: 'fee_1block', time: '≈10 min' },
     { label: '~3 blocks', key: 'fee_3block', time: '≈30 min' },
@@ -47,6 +73,13 @@ export default function Dashboard() {
   const isBearish = sentimentScore < -0.15
   const sentimentColor = isBullish ? 'text-green-400' : isBearish ? 'text-red-400' : 'text-gray-400'
   const sentimentLabel = isBullish ? 'Bullish' : isBearish ? 'Bearish' : 'Neutral'
+
+  // News tone is a softer signal than price; use a tighter deadband.
+  const newsBullish = newsTone !== null && newsTone > 0.05
+  const newsBearish = newsTone !== null && newsTone < -0.05
+  const newsColor = newsBullish ? 'text-green-400' : newsBearish ? 'text-red-400' : 'text-gray-400'
+  const newsLabel =
+    newsTone === null ? 'No data' : newsBullish ? 'Positive' : newsBearish ? 'Negative' : 'Neutral'
 
 
   const clusterNames: Record<number, string> = {
@@ -162,20 +195,43 @@ export default function Dashboard() {
         <div className="rounded-xl border border-gray-800 bg-[#161b27] p-4">
           <h2 className="mb-3 text-sm text-gray-400">Market sentiment</h2>
 
-          <div className="flex flex-col">
-            <span className={`${sentimentColor} font-mono text-5xl font-bold`}>
-              {sentimentScore.toFixed(3)}
-            </span>
-            <span
-              className={`${sentimentColor} mt-1 text-sm font-semibold uppercase tracking-widest`}
-            >
-              {sentimentLabel}
-            </span>
+          <div className="grid grid-cols-2 gap-4">
+            {/* Market mood — price + macro driven */}
+            <div className="flex flex-col">
+              <span className="mb-1 text-xs uppercase tracking-wider text-gray-500">
+                Market mood
+              </span>
+              <span className={`${sentimentColor} font-mono text-4xl font-bold`}>
+                {sentimentScore.toFixed(3)}
+              </span>
+              <span
+                className={`${sentimentColor} mt-1 text-sm font-semibold uppercase tracking-widest`}
+              >
+                {sentimentLabel}
+              </span>
+              <span className="mt-1 text-[10px] text-gray-600">BTC price + macro</span>
+            </div>
+
+            {/* News tone — average headline sentiment */}
+            <div className="flex flex-col border-l border-gray-800 pl-4">
+              <span className="mb-1 text-xs uppercase tracking-wider text-gray-500">
+                News tone
+              </span>
+              <span className={`${newsColor} font-mono text-4xl font-bold`}>
+                {newsTone === null ? '—' : newsTone.toFixed(3)}
+              </span>
+              <span
+                className={`${newsColor} mt-1 text-sm font-semibold uppercase tracking-widest`}
+              >
+                {newsLabel}
+              </span>
+              <span className="mt-1 text-[10px] text-gray-600">Avg headline sentiment</span>
+            </div>
           </div>
 
           <div className="my-3 border-t border-gray-800"></div>
 
-          <div className="mb-2 text-xs text-gray-600">24h trend</div>
+          <div className="mb-2 text-xs text-gray-600">Market mood · 24h trend</div>
           <SentimentSparkline data={sentimentHistory || []} score={sentimentScore} />
         </div>
       </div>
