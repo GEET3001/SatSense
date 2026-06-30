@@ -109,15 +109,18 @@ app = FastAPI(lifespan=lifespan)
 
 
 # Weighted crypto-news lexicons (single lowercase tokens). Strong movers ~1.0,
-# moderate ~0.5-0.7, mild ~0.3-0.4. Used when FinBERT is unavailable.
+# moderate ~0.5-0.7, mild ~0.3-0.4. Used as a crypto-domain correction on top of
+# FinBERT (which reads surface tone but misses crypto-specific bearish framing).
 _POS_LEXICON = {
     "surge": 1.0, "surges": 1.0, "soar": 1.0, "soars": 1.0, "skyrocket": 1.0,
     "rally": 0.9, "rallies": 0.9, "breakout": 0.9, "ath": 1.0, "bullish": 1.0,
     "bull": 0.7, "moon": 0.7, "rebound": 0.7, "rebounds": 0.7, "jumps": 0.7, "jump": 0.7,
     "inflows": 0.7, "inflow": 0.7, "adoption": 0.7, "adopt": 0.6, "approve": 0.8,
     "approval": 0.8, "approved": 0.8, "gain": 0.6, "gains": 0.6, "rise": 0.6, "rises": 0.6,
-    "recover": 0.6, "recovers": 0.6, "upgrade": 0.6, "accumulate": 0.6, "record": 0.5,
+    "recover": 0.6, "recovers": 0.6, "upgrade": 0.6, "accumulate": 0.6, "record": 0.4,
     "partnership": 0.5, "buy": 0.4, "institutional": 0.4, "support": 0.3, "high": 0.3,
+    "climbs": 0.7, "climb": 0.7, "surpass": 0.7, "surpasses": 0.7, "outperform": 0.6,
+    "outperforms": 0.6, "upside": 0.6, "milestone": 0.4,
 }
 _NEG_LEXICON = {
     "crash": 1.0, "crashes": 1.0, "plunge": 1.0, "plunges": 1.0, "plummet": 1.0,
@@ -128,24 +131,72 @@ _NEG_LEXICON = {
     "reject": 0.6, "rejected": 0.6, "fear": 0.6, "fud": 0.6, "drop": 0.6, "drops": 0.6,
     "fall": 0.6, "falls": 0.6, "decline": 0.6, "loss": 0.6, "losses": 0.6, "pressure": 0.5,
     "warning": 0.5, "weak": 0.5, "risk": 0.4, "low": 0.3,
+    # crypto-specific bearish framing FinBERT misreads as neutral/positive
+    "roundtrip": 1.0, "roundtrips": 1.0, "capitulation": 0.9, "capitulate": 0.9,
+    "downturn": 0.7, "downtrend": 0.7, "retrace": 0.5, "retraces": 0.5, "retreat": 0.6,
+    "underwater": 0.7, "bleed": 0.7, "bleeds": 0.7, "erase": 0.7, "erases": 0.7,
+    "erased": 0.7, "wipe": 0.8, "wipes": 0.8, "wiped": 0.8, "sink": 0.6, "sinks": 0.6,
+    "slip": 0.5, "slips": 0.5, "slide": 0.6, "slides": 0.6, "fails": 0.5, "fail": 0.5,
+    "struggle": 0.5, "struggles": 0.5, "stall": 0.5, "stalls": 0.5, "halt": 0.5,
+    "probe": 0.5, "investigation": 0.5, "delay": 0.5, "delays": 0.5, "crackdown": 0.7,
+    "correction": 0.5,
+}
+
+# Multi-word phrases (checked as substrings of the normalised text). These carry
+# meaning that single tokens lose, e.g. "give back" / "round trip" / "lower high".
+_POS_PHRASES = {
+    "all time high": 1.0, "record high": 0.8, "new high": 0.7, "new highs": 0.7,
+    "break out": 0.8, "breaks out": 0.8, "breaking out": 0.8, "higher high": 0.7,
+    "golden cross": 0.9, "buy the dip": 0.4,
+}
+_NEG_PHRASES = {
+    "give back": 0.8, "gives back": 0.8, "gave back": 0.8, "giving back": 0.8,
+    "sell off": 0.9, "sells off": 0.9, "round trip": 1.0, "lower high": 0.7,
+    "lower low": 0.7, "death cross": 0.9, "bear market": 0.9, "wipe out": 0.9,
+    "wiped out": 0.9, "break down": 0.6, "breaks down": 0.6, "breaking down": 0.6,
+    "all time low": 1.0, "record low": 0.9, "loses support": 0.8, "lost support": 0.8,
+    "below support": 0.7, "sell pressure": 0.7, "selling pressure": 0.7,
+    "profit taking": 0.5,
 }
 
 
+def _keyword_score_one(text: str) -> float:
+    """Crypto-domain sentiment in [-1, 1] from weighted tokens + phrases."""
+    norm = re.sub(r"\s+", " ", str(text).lower())
+    # Token-equality (not substring) avoids false hits like "up" in "support".
+    tokens = set(re.findall(r"[a-z]+", norm))
+    pos = sum(w for term, w in _POS_LEXICON.items() if term in tokens)
+    neg = sum(w for term, w in _NEG_LEXICON.items() if term in tokens)
+    pos += sum(w for phrase, w in _POS_PHRASES.items() if phrase in norm)
+    neg += sum(w for phrase, w in _NEG_PHRASES.items() if phrase in norm)
+    # tanh saturation: a couple of strong words approach +/-1 without clipping noise.
+    return max(-1.0, min(1.0, math.tanh((pos - neg) / 1.5)))
+
+
 def _score_texts_keyword_fallback(texts: list[str]) -> list[float]:
-    scores = []
-    for text in texts:
-        # Token-equality (not substring) avoids false hits like "up" in "support".
-        tokens = set(re.findall(r"[a-z]+", str(text).lower()))
-        pos = sum(w for term, w in _POS_LEXICON.items() if term in tokens)
-        neg = sum(w for term, w in _NEG_LEXICON.items() if term in tokens)
-        # tanh saturation: a couple of strong words approach +/-1 without clipping noise.
-        scores.append(max(-1.0, min(1.0, math.tanh((pos - neg) / 1.5))))
-    return scores
+    return [_keyword_score_one(t) for t in texts]
+
+
+def _blend_finbert_keyword(finbert: float, keyword: float) -> float:
+    """Combine FinBERT's general tone with the crypto-domain lexicon.
+
+    When the lexicon is confident (|keyword| >= 0.4) and disagrees in sign with
+    FinBERT, trust the domain lexicon — this is what stops headlines like
+    "Altcoin Market Cap Roundtrips 900 Days" from reading as bullish. Otherwise
+    FinBERT leads with the lexicon as a nudge.
+    """
+    disagree = finbert == 0.0 or (finbert > 0) != (keyword > 0)
+    if abs(keyword) >= 0.4 and disagree:
+        blended = 0.7 * keyword + 0.3 * finbert
+    else:
+        blended = 0.6 * finbert + 0.4 * keyword
+    return max(-1.0, min(1.0, blended))
+
 
 async def score_texts(texts: list[str]) -> list[float]:
     if not texts: return []
     if not HF_TOKEN: return _score_texts_keyword_fallback(texts)
-    
+
     try:
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         async with httpx.AsyncClient() as client:
@@ -166,12 +217,14 @@ async def score_texts(texts: list[str]) -> list[float]:
                 probs = {d.get("label", "").lower(): d.get("score", 0.0) for d in label_dicts}
                 return float(probs.get("positive", 0.0) - probs.get("negative", 0.0))
 
-            scores = [_signed(item) for item in results]
+            finbert_scores = [_signed(item) for item in results]
             # Guard against any shape surprise so we never return misaligned scores.
-            if len(scores) != len(texts):
+            if len(finbert_scores) != len(texts):
                 logger.warning("HF API returned mismatched length; using keyword fallback")
                 return _score_texts_keyword_fallback(texts)
-            return scores
+            # Correct FinBERT's general tone with crypto-domain knowledge.
+            keyword_scores = _score_texts_keyword_fallback(texts)
+            return [_blend_finbert_keyword(f, k) for f, k in zip(finbert_scores, keyword_scores)]
     except Exception as e:
         logger.warning(f"HF API Call failed: {e}")
         return _score_texts_keyword_fallback(texts)
