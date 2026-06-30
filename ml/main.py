@@ -199,11 +199,11 @@ def _clean_rss_text(title: str, summary: str) -> str:
     return (title + ". " + summary[:200]).strip()
 
 
-def _mk_item(source: str, text: str, score: float) -> dict:
-    clipped = text[:150] + ("..." if len(text) > 150 else "")
+def _mk_item(source: str, title: str, score: float, url: str = "") -> dict:
     return {
         "source": source,
-        "text": clipped,
+        "title": title,
+        "url": url,
         "score": round(float(score), 3),
         "impact": round(abs(float(score)) * _SRC_WEIGHT.get(source, 1.0), 3),
     }
@@ -368,22 +368,28 @@ async def fetch_sentiment_data() -> dict:
             "https://www.newsbtc.com/feed/",
             "https://cryptoslate.com/feed/",
         ]
-        res_texts = []
+        items = []
         for feed_url in feeds:
             try:
                 parsed = feedparser.parse(feed_url)
                 for entry in parsed.entries[:5]:
-                    title = entry.title if hasattr(entry, "title") else ""
+                    raw_title = entry.title if hasattr(entry, "title") else ""
                     summary = entry.get("summary", "")
-                    res_texts.append(_clean_rss_text(title, summary))
+                    url = entry.get("link", "")
+                    clean_title = _clean_rss_text(raw_title, "")        # display: headline only
+                    scoring_text = _clean_rss_text(raw_title, summary)  # scoring: + summary context
+                    items.append({"title": clean_title, "text": scoring_text, "url": url})
             except Exception as e:
                 logger.error(f"Error fetching RSS {feed_url}: {e}")
-        return res_texts
+        return items
 
     loop = asyncio.get_event_loop()
-    rss_texts = await loop.run_in_executor(None, fetch_rss)
+    rss_items = await loop.run_in_executor(None, fetch_rss)
+    rss_titles = [i["title"] for i in rss_items]
+    rss_texts  = [i["text"]  for i in rss_items]
+    rss_urls   = [i["url"]   for i in rss_items]
 
-    reddit_texts = []
+    reddit_titles, reddit_texts, reddit_urls = [], [], []
     try:
         headers = {"User-Agent": "mempool-sentiment-bot/1.0 (by /u/anonymous)"}
         async with httpx.AsyncClient(
@@ -399,8 +405,11 @@ async def fetch_sentiment_data() -> dict:
                     posts = data.get("data", {}).get("children", [])
                     for post in posts:
                         title = post.get("data", {}).get("title", "")
+                        permalink = post.get("data", {}).get("permalink", "")
                         if title:
+                            reddit_titles.append(title)
                             reddit_texts.append(title)
+                            reddit_urls.append(f"https://reddit.com{permalink}" if permalink else "")
     except Exception as e:
         logger.warning(f"Reddit public JSON fetch failed: {e}")
 
@@ -448,8 +457,8 @@ async def fetch_sentiment_data() -> dict:
     reddit_scores = await score_texts(reddit_texts) if reddit_texts else []
 
     global LATEST_NEWS
-    all_items = [_mk_item("News", t, s) for t, s in zip(rss_texts, rss_scores)]
-    all_items += [_mk_item("Reddit", t, s) for t, s in zip(reddit_texts, reddit_scores)]
+    all_items = [_mk_item("News", t, s, u) for t, s, u in zip(rss_titles, rss_scores, rss_urls)]
+    all_items += [_mk_item("Reddit", t, s, u) for t, s, u in zip(reddit_titles, reddit_scores, reddit_urls)]
     all_items.sort(key=lambda x: x["impact"], reverse=True)
     LATEST_NEWS = all_items[:4]
 
@@ -475,7 +484,7 @@ async def fetch_sentiment_data() -> dict:
     )
     current_avg = max(-1.0, min(1.0, current_avg))
 
-    all_texts = rss_texts + reddit_texts
+    all_texts = rss_titles + reddit_titles
 
     if current_avg == 0.0 and len(all_texts) == 0:
         # If API failed or returned nothing, drift slightly so it doesn't freeze
@@ -484,7 +493,7 @@ async def fetch_sentiment_data() -> dict:
         # Keep recent topic to avoid empty state. LATEST_NEWS holds dicts
         # ({"source","text","score"}), so extract the text before scoring topics.
         dominant_topic = (
-            get_dominant_topic([item["text"] for item in LATEST_NEWS])
+            get_dominant_topic([item["title"] for item in LATEST_NEWS])
             if LATEST_NEWS
             else "price_action"
         )

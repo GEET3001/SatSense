@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react'
 
 type NewsItem = {
   source: string
-  text: string
+  title: string
+  url: string
   score: number
 }
 
@@ -65,7 +66,18 @@ export default function NewsFeed() {
           
           return (
             <div key={idx} className="group flex flex-col justify-between rounded-lg border border-gray-800 bg-[#1a2130] p-4 transition-all hover:border-gray-600 hover:bg-[#1e2638]">
-              <p className="text-sm text-gray-300 mb-3 line-clamp-3">{item.text}</p>
+              {item.url ? (
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-medium text-gray-200 hover:text-blue-400 transition-colors leading-snug line-clamp-3 mb-3"
+                >
+                  {item.title}
+                </a>
+              ) : (
+                <p className="text-sm font-medium text-gray-200 leading-snug line-clamp-3 mb-3">{item.title}</p>
+              )}
               <div className="flex items-center justify-between mt-auto">
                 <span className="text-xs text-gray-500 font-mono uppercase tracking-wider">{item.source}</span>
                 <div className="flex items-center gap-2">
